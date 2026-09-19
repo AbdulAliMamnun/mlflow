@@ -39,6 +39,12 @@ from mlflow.version import IS_TRACING_SDK_ONLY
 if not IS_TRACING_SDK_ONLY:
     from mlflow.pyfunc.context import Context
 
+# LangGraph is an optional dependency of the LangChain flavor
+try:
+    from langgraph.errors import GraphInterrupt
+except ImportError:
+    GraphInterrupt = None
+
 
 _logger = logging.getLogger(__name__)
 
@@ -628,6 +634,12 @@ class MlflowLangchainTracer(BaseCallbackHandler, metaclass=ExceptionSafeAbstract
         **kwargs: Any,
     ):
         """Run when chain errors."""
+        # LangGraph raises GraphInterrupt to pause a graph for human input. It is normal
+        # control flow rather than a failure, so the span should not be marked as an error.
+        if GraphInterrupt is not None and isinstance(error, GraphInterrupt):
+            self.on_chain_end(outputs={}, inputs=inputs, run_id=run_id, **kwargs)
+            return
+
         chain_span = self._get_span_by_run_id(run_id)
         if inputs:
             chain_span.set_inputs(inputs)

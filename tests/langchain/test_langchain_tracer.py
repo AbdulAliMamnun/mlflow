@@ -409,6 +409,48 @@ def test_retriever_internal_exception():
         callback.flush()
 
 
+def test_chain_error():
+    callback = MlflowLangchainTracer()
+    run_id = str(uuid.uuid4())
+    callback.on_chain_start({}, {"input": "test input"}, run_id=run_id, name="test_chain")
+    mock_error = Exception("mock exception")
+    callback.on_chain_error(error=mock_error, run_id=run_id)
+
+    trace = mlflow.get_trace(mlflow.get_last_active_trace_id())
+    error_event = SpanEvent.from_exception(mock_error)
+    assert len(trace.data.spans) == 1
+    chain_span = trace.data.spans[0]
+    assert chain_span.status.status_code == SpanStatusCode.ERROR
+    assert chain_span.status.description == str(mock_error)
+    assert chain_span.inputs == {"input": "test input"}
+    assert chain_span.outputs is None
+    # timestamp is auto-generated when converting the error to event
+    assert chain_span.events[0].name == error_event.name
+    assert chain_span.events[0].attributes == error_event.attributes
+
+    _validate_trace_json_serialization(trace)
+
+
+def test_chain_graph_interrupt_is_not_error():
+    # LangGraph is optional for the LangChain flavor, so it may not be installed
+    errors = pytest.importorskip("langgraph.errors")
+
+    callback = MlflowLangchainTracer()
+    run_id = str(uuid.uuid4())
+    callback.on_chain_start({}, {"input": "test input"}, run_id=run_id, name="test_chain")
+    callback.on_chain_error(error=errors.GraphInterrupt(), run_id=run_id)
+
+    trace = mlflow.get_trace(mlflow.get_last_active_trace_id())
+    assert len(trace.data.spans) == 1
+    chain_span = trace.data.spans[0]
+    assert chain_span.status.status_code == SpanStatusCode.OK
+    assert chain_span.inputs == {"input": "test input"}
+    assert chain_span.outputs == {}
+    assert chain_span.events == []
+
+    _validate_trace_json_serialization(trace)
+
+
 def test_multiple_components():
     callback = MlflowLangchainTracer()
     chain_run_id = str(uuid.uuid4())

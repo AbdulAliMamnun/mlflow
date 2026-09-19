@@ -1,6 +1,10 @@
 import json
+from typing import TypedDict
 
 import pytest
+from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.graph import END, START, StateGraph
+from langgraph.types import interrupt
 
 import mlflow
 from mlflow.entities.span import SpanType
@@ -286,3 +290,30 @@ def test_langgraph_autolog_with_update_current_span():
     assert model_info.signature is not None
     assert model_info.signature.inputs is not None
     assert model_info.signature.outputs is not None
+
+
+def test_langgraph_interrupt_is_not_traced_as_error():
+    mlflow.langchain.autolog()
+
+    class State(TypedDict):
+        answer: str
+
+    def ask_human(state: State):
+        return {"answer": interrupt("need human input")}
+
+    builder = StateGraph(State)
+    builder.add_node("ask_human", ask_human)
+    builder.add_edge(START, "ask_human")
+    builder.add_edge("ask_human", END)
+    graph = builder.compile(checkpointer=InMemorySaver())
+
+    result = graph.invoke({"answer": ""}, {"configurable": {"thread_id": "1"}})
+    assert result["__interrupt__"][0].value == "need human input"
+
+    traces = get_traces()
+    assert len(traces) == 1
+    assert traces[0].info.status == "OK"
+    spans = {span.name: span for span in traces[0].data.spans}
+    assert spans["LangGraph"].status.status_code == SpanStatusCode.OK
+    assert spans["ask_human"].status.status_code == SpanStatusCode.OK
+    assert all(span.events == [] for span in traces[0].data.spans)
